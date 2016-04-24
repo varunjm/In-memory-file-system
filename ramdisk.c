@@ -21,8 +21,6 @@ gcc -Wall ramdisk.c `pkg-config fuse --cflags --libs` -o ramdisk
 #include <dirent.h>
 #include <sys/types.h>
 
-static const char *ramdisk_path = "/ramdisk";
-
 enum FILETYPES{REGULAR,DIRECTORY,FIFO,BLK,CHR,HLINK,SLINK};
 
 typedef struct node {
@@ -40,20 +38,37 @@ typedef struct node {
 
 FS rootDir, *pwd;
 
-void initialize(FS *temp,const char *n, int fT, mode_t mode, int s, FS *p)
+void initialize(FS *temp,const char *n, int fT, mode_t mode,FS *p)
 {
+	int i,j;
+	char *parentName = (char *)malloc(sizeof(n)+1);
+
+	// File name
 	temp->name = (char *)malloc(strlen(n)+1);
 	strcpy(temp->name,n);
+	
+	//File type
 	temp->fileType = fT;
+
+	//File mode
 	if(S_ISFIFO(mode))
 		temp->mode = S_IFIFO | mode;
 	else if(S_ISDIR(mode))
 		temp->mode = S_IFDIR | mode;
+
+	//File size
 	temp->size = 0;
+
+	//File parent
 	temp->parent = p;
-	temp->fileCount = 0;
-	temp->fileListSize = 1;
-	pwd = &rootDir;
+
+	// Additional data if its a directory
+	if(fT == DIRECTORY)
+	{
+		temp->fileCount = 0;
+		temp->fileList = (FS **)malloc(sizeof(FS *));
+		temp->fileListSize = 1;
+	}
 }
 
 static void ramdisk_init()
@@ -64,6 +79,7 @@ static void ramdisk_init()
 	rootDir.fileCount = 0;
 	rootDir.fileListSize = 1;
 	rootDir.fileList = (FS **)malloc(sizeof(FS *));
+	pwd = &rootDir;
 }
 
 int clip(const char *path)
@@ -215,7 +231,7 @@ static int ramdisk_mkdir(const char *path, mode_t mode)
 	if(entry)
 	{
 		entry->fileCount++;
-		initialize(temp,path,DIRECTORY,mode,0,entry);
+		initialize(temp,path,DIRECTORY,mode,entry);
 		if( entry->fileListSize <= entry->fileCount)
 		{
 			entry->fileList = (FS **)realloc(entry->fileList, (entry->fileListSize)*2*sizeof(FS));
@@ -257,15 +273,15 @@ static int ramdisk_mknod(const char *path, mode_t mode)
 		(entry->fileCount)++;
 
 		if(S_ISFIFO(mode))
-			initialize(temp,path,FIFO,mode,0,entry);
+			initialize(temp,path,FIFO,mode,entry);
 		else if(S_ISBLK(mode))
-			initialize(temp,path,BLK,mode,0,entry);
+			initialize(temp,path,BLK,mode,entry);
 		else if(S_ISCHR(mode))
-			initialize(temp,path,CHR,mode,0,entry);
+			initialize(temp,path,CHR,mode,entry);
 		else if(S_ISLNK(mode))
-			initialize(temp,path,SLINK,mode,0,entry);
+			initialize(temp,path,SLINK,mode,entry);
 		else
-			initialize(temp,path,REGULAR,mode,0,entry);
+			initialize(temp,path,REGULAR,mode,entry);
 
 		if( entry->fileListSize <= entry->fileCount)
 		{
@@ -319,13 +335,9 @@ static int ramdisk_open(const char *path, struct fuse_file_info *fi)
 		return -EACCES;
 	return 0;
 }*/
-
-
-
 static int ramdisk_read(const char *path, char *buf, size_t size, off_t offset,
 		    struct fuse_file_info *fi)
 {
-	int fd;
 	int res;
 
 	(void) fi;
@@ -346,7 +358,7 @@ static int ramdisk_read(const char *path, char *buf, size_t size, off_t offset,
 static int ramdisk_write(const char *path, const char *buf, size_t size,
 		     off_t offset, struct fuse_file_info *fi)
 {
-	int res=0, i=0;
+	int i=0;
 	(void) fi;
 	printf("Entering write : %s, %s\n",path,buf);
 
@@ -360,14 +372,14 @@ static int ramdisk_write(const char *path, const char *buf, size_t size,
 	else if( temp->size < (offset+size) )
 	{
 		temp->data = (char *)realloc(temp->data,offset+size);
-		temp->size = offset+size+1;
+		temp->size = offset+size;
 	}
 
 	if(temp->data == NULL)
 		return -ENOSPC;
 
 	printf("Writing data : %s\n", buf);
-	printf("Size : %d, %d, %c\n",temp->size,size,temp->data[2] );
+	printf("Size : %d, %d, %c\n",(int)temp->size,(int)size,temp->data[2] );
 	while(i<size)
 	{
 		temp->data[offset+i] = buf[i];
@@ -380,7 +392,15 @@ static int ramdisk_write(const char *path, const char *buf, size_t size,
 	return size;
 }
 
+static int ramdisk_truncate(const char* path, off_t size)
+{
+	return 0;
+}
 
+static int ramdisk_flush(const char* path, struct fuse_file_info* fi)
+{
+	return 0;
+}
 static int ramdisk_statfs(const char *path, struct statvfs *stbuf)
 {
 	int res;
@@ -407,20 +427,80 @@ int ramdisk_opendir(const char *path, struct fuse_file_info *fi)
     return retstat;
 }
 
+static int ramdisk_unlink(const char *path)
+{
+    printf("Entering unlink : %s\n",path);
+    FS * temp = pathExists(path,&rootDir);
+    FS * parent = temp->parent;
+    int i=0;
+
+    free(temp->data);
+    if(parent->fileCount == 1)
+    {
+    	free(parent->fileList);
+    	parent->fileCount = 0;
+    	parent->fileList = (FS **)malloc(sizeof(FS*));
+    	parent->fileListSize = 1;
+    }
+    else
+    {
+    	while(parent->fileList[i] != temp) i++;
+    	free(parent->fileList[i]);
+    	(parent->fileCount)--;
+    	if( i != parent->fileCount )
+    		parent->fileList[i] = parent->fileList[parent->fileCount];
+    }
+    printf("Exiting unlink : %s\n",path);
+
+    return 0;
+}
+
+static int ramdisk_rmdir(const char *path)
+{
+    printf("Entering rmdir : %s\n",path);
+    FS * temp = pathExists(path,&rootDir);
+    FS * parent = temp->parent;
+    int i=0;
+
+    if(temp->fileCount != 0)
+    	return -ENOTEMPTY;
+
+    free(temp->fileList);
+
+    if(parent->fileCount == 1)
+    {
+    	free(parent->fileList);
+    	parent->fileCount = 0;
+    	parent->fileList = (FS **)malloc(sizeof(FS*));
+    	parent->fileListSize = 1;
+    }
+    else
+    {
+    	while(parent->fileList[i] != temp) i++;
+    	free(parent->fileList[i]);
+    	(parent->fileCount)--;
+    	if( i != parent->fileCount )
+    		parent->fileList[i] = parent->fileList[parent->fileCount];
+    }
+    printf("Exiting rmdir : %s\n",path);
+
+    return 0;
+}
+
 static struct fuse_operations ramdisk_oper = {
 	.getattr	= ramdisk_getattr,
 	
 	// .open		= ramdisk_open,
-	// .flush		= ramdisk_flush,
-
+	.flush		= ramdisk_flush,
+	.truncate 	= ramdisk_truncate,
 	.read		= ramdisk_read,
 	.write		= ramdisk_write,
 	
 	.mknod		= ramdisk_mknod,
 	.mkdir		= ramdisk_mkdir,
 
-	// .unlink 	= ramdisk_unlink,
-  	// .rmdir 		= ramdisk_rmdir,
+	.unlink 	= ramdisk_unlink,
+  	.rmdir 		= ramdisk_rmdir,
 
 	.opendir    = ramdisk_opendir,
 	.readdir	= ramdisk_readdir,
