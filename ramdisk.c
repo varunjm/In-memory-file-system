@@ -480,16 +480,17 @@ static int ramdisk_unlink(const char *path)
     int size = temp->size;
 
     printf("before deleted file info : %s\n",temp->name);
-	// free(temp->data);
-	printf("deleted file info\n");
+	free(temp->data);
+	free(temp->name);
+    printf("deleted file info\n");
 
     if(parent->fileCount == 1)
     {
-    	free(parent->fileList);
     	parent->fileCount = 0;
+    	parent->fileListSize = 1;
+    	free(parent->fileList);
     	parent->fileList = (FS **)malloc(sizeof(FS*));
     	if(parent->fileList == NULL)	return -ENOMEM;
-    	parent->fileListSize = 1;
     }
     else
     {
@@ -498,8 +499,17 @@ static int ramdisk_unlink(const char *path)
     	printf("Freeing :  %s\n",parent->fileList[i]->name);
     	free(parent->fileList[i]);
     	(parent->fileCount)--;
+    	
     	if( i != parent->fileCount )
     		parent->fileList[i] = parent->fileList[parent->fileCount];
+
+    	if( (parent->fileListSize)/2 > parent->fileCount)
+    	{
+    		parent->fileListSize /= 2;
+    		parent->fileList = (FS **)realloc(parent->fileList, sizeof(FS *)*parent->fileListSize);
+    		if( parent->fileList == NULL ) return -ENOMEM;
+    	}	
+    	
     }
     cur_size -= size;
     printf("Exiting unlink : %s\n",path);
@@ -518,10 +528,13 @@ static int ramdisk_rmdir(const char *path)
     if(temp->fileCount != 0)
     	return -ENOTEMPTY;
 
+
     free(temp->fileList);
+    free(temp->name);
 
     if(parent->fileCount == 1)
     {
+    	free(temp);
     	free(parent->fileList);
     	parent->fileCount = 0;
     	parent->fileList = (FS **)malloc(sizeof(FS*));
@@ -531,10 +544,16 @@ static int ramdisk_rmdir(const char *path)
     else
     {
     	while(parent->fileList[i] != temp) i++;
-    	free(parent->fileList[i]);
+    	free(temp);
     	(parent->fileCount)--;
     	if( i != parent->fileCount )
     		parent->fileList[i] = parent->fileList[parent->fileCount];
+    	if(parent->fileListSize > 2*parent->fileCount)
+    	{
+    		parent->fileListSize /= 2;
+    		parent->fileList = (FS **)realloc(parent->fileList,parent->fileListSize*sizeof(FS *));
+    		if(parent->fileList == NULL) return -ENOMEM;
+    	}
     }
     printf("Exiting rmdir : %s\n",path);
 
